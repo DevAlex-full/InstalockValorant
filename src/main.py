@@ -125,18 +125,26 @@ class InstalockApp(ctk.CTk):
         ctk.set_appearance_mode("dark")
         self.title("InstalockValorant")
         self.geometry("1040x740")
-        self.resizable(False, False)
+        self.minsize(900, 640)          # tamanho mínimo
+        self.resizable(True, True)      # janela flexível
         self.configure(fg_color=C['bg'])
         self.protocol("WM_DELETE_WINDOW", self._on_close)
-        # Ícone da janela (barra de título + taskbar)
+
+        # ── Ícone em todos os lugares (barra de título, taskbar, Alt+Tab) ──
+        ico_path = _get_asset('instalock_logo.ico')
+        png_path = _get_asset('instalock_logo.png')
         try:
-            from PIL import ImageTk
-            pil_icon = Image.open(_get_asset('instalock_logo.png')).resize((32, 32), Image.LANCZOS)
-            tk_icon  = ImageTk.PhotoImage(pil_icon)
-            self.iconphoto(True, tk_icon)
-            self._icon_ref = tk_icon  # evita GC
+            # .ico = método mais confiável no Windows (barra de título + taskbar)
+            self.iconbitmap(ico_path)
         except Exception:
-            pass
+            try:
+                from PIL import ImageTk
+                pil_icon = Image.open(png_path).resize((32, 32), Image.LANCZOS)
+                tk_icon  = ImageTk.PhotoImage(pil_icon)
+                self.iconphoto(True, tk_icon)
+                self._icon_ref = tk_icon
+            except Exception:
+                pass
 
     # ── UI ────────────────────────────────────────────────────────────────────
     def _build_ui(self):

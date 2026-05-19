@@ -29,8 +29,12 @@ if %errorlevel% neq 0 (
     exit /b 1
 )
 
-echo  [2/4] Instalando PyInstaller...
+echo  [2/4] Instalando PyInstaller e gerando icone .ico...
 pip install pyinstaller --quiet
+python assets\make_ico.py
+if not exist "assets\instalock_logo.ico" (
+    echo  [AVISO] Falha ao gerar .ico — o .exe ficara sem icone personalizado.
+)
 
 echo  [3/4] Compilando .exe (pode demorar 1-2 minutos)...
 echo.
@@ -41,13 +45,15 @@ python -m PyInstaller ^
   --onefile ^
   --windowed ^
   --name "InstalockValorant" ^
+  --icon "../assets/instalock_logo.ico" ^
   --add-data "../requirements.txt;." ^
+  --add-data "../assets/instalock_logo.png;." ^
+  --add-data "../assets/instalock_logo.ico;." ^
   --hidden-import "pynput.keyboard._win32" ^
   --hidden-import "pynput.mouse._win32" ^
   --collect-all "customtkinter" ^
   --collect-all "pynput" ^
   --collect-all "valclient" ^
-  --add-data "../assets/instalock_logo.png;." ^
   main.py
 
 cd ..
