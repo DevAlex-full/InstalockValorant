@@ -122,7 +122,19 @@ def get_pregame_match_id(client: Client) -> str | None:
         raise
 
 
-def select_agent(client: Client, agent_id: str) -> bool:
+def get_current_map(client) -> str | None:
+    """
+    Retorna o mapUrl do mapa atual (ex: '/Game/Maps/Triad/Triad')
+    ou None se não estiver em agent select.
+    """
+    try:
+        match = client.pregame_fetch_match()
+        return match.get('MapID')  # ex: /Game/Maps/Port/Port
+    except Exception:
+        return None
+
+
+def select_agent(client, agent_id: str) -> bool:
     """Seleciona (hover) o agente."""
     try:
         client.pregame_select_character(agent_id)

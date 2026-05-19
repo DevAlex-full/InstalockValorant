@@ -1,88 +1,93 @@
 """
 agents.py
-Busca e cacheia dados + ícones dos agentes via valorant-api.com (API pública, gratuita).
+Busca agentes + mapas via valorant-api.com (API pública, gratuita).
 """
-
-import os
-import json
-import requests
+import os, json, requests
 from typing import List, Dict
 
-API_URL   = "https://valorant-api.com/v1/agents?isPlayableCharacter=true&language=pt-BR"
-CACHE_FILE = "agents_cache.json"
+AGENTS_API = "https://valorant-api.com/v1/agents?isPlayableCharacter=true&language=pt-BR"
+MAPS_API   = "https://valorant-api.com/v1/maps?language=pt-BR"
+AGENTS_CACHE = "agents_cache.json"
+MAPS_CACHE   = "maps_cache.json"
 
 
 def fetch_agents(agents_dir: str) -> List[Dict]:
-    """
-    Retorna lista de agentes com UUID, nome e ícone local.
-    - Na primeira execução: baixa da API e cacheia.
-    - Nas próximas: usa cache local se imagens já existem.
-    """
-    cache_path = os.path.join(agents_dir, CACHE_FILE)
-
-    # ── Tenta usar cache ──────────────────────────────────────────────────────
+    cache_path = os.path.join(agents_dir, AGENTS_CACHE)
     if os.path.exists(cache_path):
         try:
-            with open(cache_path, encoding='utf-8') as f:
-                agents = json.load(f)
-
-            # Verifica se todas as imagens existem
-            all_ok = all(
-                os.path.exists(os.path.join(agents_dir, f"{a['uuid']}.png"))
-                for a in agents
-            )
-            if all_ok:
+            agents = json.load(open(cache_path, encoding='utf-8'))
+            if all(os.path.exists(os.path.join(agents_dir, f"{a['uuid']}.png")) for a in agents):
                 return sorted(agents, key=lambda x: x['displayName'])
         except Exception:
             pass
-
-    # ── Busca da API ──────────────────────────────────────────────────────────
     try:
-        resp = requests.get(API_URL, timeout=15)
-        resp.raise_for_status()
-        raw_agents = resp.json().get('data', [])
+        raw = requests.get(AGENTS_API, timeout=15).json().get('data', [])
     except Exception as e:
-        print(f"[agents] Erro ao buscar agentes: {e}")
+        print(f"[agents] Erro: {e}")
         return []
-
     agents = []
-    for raw in raw_agents:
-        # Prefere bust portrait, fallback para display icon
-        icon_url = raw.get('bustPortrait') or raw.get('displayIcon') or ''
-        role_name = ''
-        if raw.get('role'):
-            role_name = raw['role'].get('displayName', '')
-
+    for r in raw:
+        icon_url = r.get('bustPortrait') or r.get('displayIcon') or ''
         agents.append({
-            'uuid':        raw['uuid'],
-            'displayName': raw['displayName'],
-            'role':        role_name,
+            'uuid':        r['uuid'],
+            'displayName': r['displayName'],
+            'role':        (r.get('role') or {}).get('displayName', ''),
             'iconUrl':     icon_url,
         })
-
-    # ── Download das imagens ──────────────────────────────────────────────────
-    print(f"[agents] Baixando {len(agents)} ícones...")
-    session = requests.Session()
-
-    for agent in agents:
-        img_path = os.path.join(agents_dir, f"{agent['uuid']}.png")
-        if os.path.exists(img_path):
-            continue
-        if not agent['iconUrl']:
-            continue
-        try:
-            img_resp = session.get(agent['iconUrl'], timeout=10)
-            img_resp.raise_for_status()
-            with open(img_path, 'wb') as f:
-                f.write(img_resp.content)
-        except Exception as e:
-            print(f"[agents] Falha ao baixar ícone de {agent['displayName']}: {e}")
-
-    # ── Salva cache ───────────────────────────────────────────────────────────
-    try:
-        with open(cache_path, 'w', encoding='utf-8') as f:
-            json.dump(agents, f, ensure_ascii=False, indent=2)
-    except Exception as e:
-        print(f"[agents] Não foi possível salvar cache: {e}")
-
+    sess = requests.Session()
+    for a in agents:
+        p = os.path.join(agents_dir, f"{a['uuid']}.png")
+        if not os.path.exists(p) and a['iconUrl']:
+            try:
+                resp = sess.get(a['iconUrl'], timeout=10)
+                resp.raise_for_status()
+                open(p, 'wb').write(resp.content)
+            except Exception:
+                pass
+    json.dump(agents, open(cache_path, 'w', encoding='utf-8'), ensure_ascii=False, indent=2)
     return sorted(agents, key=lambda x: x['displayName'])
+
+
+def fetch_maps(assets_dir: str) -> List[Dict]:
+    cache_path = os.path.join(assets_dir, MAPS_CACHE)
+    if os.path.exists(cache_path):
+        try:
+            maps = json.load(open(cache_path, encoding='utf-8'))
+            if all(os.path.exists(os.path.join(assets_dir, f"map_{m['uuid']}.png")) for m in maps):
+                return maps
+        except Exception:
+            pass
+    try:
+        raw = requests.get(MAPS_API, timeout=15).json().get('data', [])
+    except Exception as e:
+        print(f"[maps] Erro: {e}")
+        return []
+
+    maps = []
+    for r in raw:
+        # Filtra mapas sem displayName real (tutorial, range, etc)
+        name = r.get('displayName', '')
+        if not name or name.lower() in ['the range', 'character select', 'menu']:
+            continue
+        maps.append({
+            'uuid':        r['uuid'],
+            'mapUrl':      r.get('mapUrl', ''),   # usado pelo pregame para identificar
+            'displayName': name,
+            'splash':      r.get('splash', ''),
+            'listViewIcon': r.get('listViewIcon', ''),
+        })
+
+    sess = requests.Session()
+    for m in maps:
+        p = os.path.join(assets_dir, f"map_{m['uuid']}.png")
+        icon = m['listViewIcon'] or m['splash']
+        if not os.path.exists(p) and icon:
+            try:
+                resp = sess.get(icon, timeout=10)
+                resp.raise_for_status()
+                open(p, 'wb').write(resp.content)
+            except Exception:
+                pass
+
+    json.dump(maps, open(cache_path, 'w', encoding='utf-8'), ensure_ascii=False, indent=2)
+    return maps

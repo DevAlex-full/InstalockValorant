@@ -47,6 +47,7 @@ python -m PyInstaller ^
   --collect-all "customtkinter" ^
   --collect-all "pynput" ^
   --collect-all "valclient" ^
+  --add-data "../assets/instalock_logo.png;." ^
   main.py
 
 cd ..
