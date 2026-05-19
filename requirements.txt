@@ -1,0 +1,6 @@
+customtkinter>=5.2.2
+Pillow>=10.0.0
+requests>=2.31.0
+pynput>=1.7.6
+urllib3>=2.0.0
+valclient @ git+https://github.com/colinhartigan/valclient.py.git
