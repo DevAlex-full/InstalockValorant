@@ -8,8 +8,9 @@
 [![Valorant](https://img.shields.io/badge/Valorant-API-FF4655?style=flat-square)](https://playvalorant.com)
 [![License](https://img.shields.io/badge/License-MIT-green?style=flat-square)](LICENSE)
 [![Windows](https://img.shields.io/badge/Windows-10%2F11-0078D4?style=flat-square&logo=windows)](https://microsoft.com)
+[![Site](https://img.shields.io/badge/Site-instalockvalorant.vercel.app-FF4655?style=flat-square&logo=vercel&logoColor=white)](https://instalockvalorant.vercel.app)
 
-<img src="https://i.imgur.com/placeholder.png" alt="InstalockValorant Preview" width="700"/>
+### 🌐 [instalockvalorant.vercel.app](https://instalockvalorant.vercel.app)
 
 </div>
 
@@ -23,9 +24,20 @@ Utiliza a **API local oficial do Riot Client** via [valclient.py](https://github
 
 ---
 
+## 📥 Download
+
+> **A forma mais fácil de baixar é pelo site oficial:**
+>
+> ### 👉 [instalockvalorant.vercel.app](https://instalockvalorant.vercel.app)
+
+Ou acesse direto a seção de [Releases](../../releases) deste repositório.
+
+---
+
 ## ✨ Funcionalidades
 
 - 🎯 **Instalock automático** — detecta a fase de seleção e trava em milissegundos
+- 🗺️ **Agente por mapa** — configure um agente diferente para cada mapa
 - 🖼️ **Grid visual com ícones oficiais** dos agentes (buscados direto da Riot API)
 - 🌍 **Detecção automática de região** via log do próprio jogo
 - 🔑 **Hotkey global configurável** (padrão: `F1`) — funciona mesmo com o jogo em foco
@@ -58,14 +70,15 @@ Para **compilar do código-fonte** (desenvolvedor):
 
 ## 🚀 Como Usar (Executável)
 
-1. Baixe o `InstalockValorant.exe` na seção [Releases](../../releases)
+1. Baixe o `InstalockValorant.exe` em **[instalockvalorant.vercel.app](https://instalockvalorant.vercel.app)**
 2. Abra o **Valorant** e aguarde o menu principal carregar
 3. Execute o `InstalockValorant.exe`
    > Na **primeira execução**: o programa baixa os ícones dos agentes (~30 segundos)
 4. Aguarde a status bar mostrar: `✅ Conectado | Região: BR`
-5. **Clique no agente** que deseja instalock
-6. Pressione **F1** para ativar (badge fica verde: `● ATIVO`)
-7. Entre na fila — ao abrir a seleção de agentes, o lock acontece automaticamente
+5. **Selecione o mapa** no painel esquerdo (ou deixe em Padrão)
+6. **Clique no agente** que deseja para aquele mapa
+7. Pressione **F1** para ativar (badge fica verde: `● ATIVO`)
+8. Entre na fila — ao abrir a seleção de agentes, o lock acontece instantaneamente
 
 ### Dica
 > Ative o instalock **antes de aceitar a partida** para garantir máxima velocidade.
@@ -99,12 +112,16 @@ O arquivo `InstalockValorant.exe` será gerado na raiz do projeto.
 
 ```
 InstalockValorant/
+├── assets/
+│   ├── instalock_logo.png    # Logo oficial
+│   ├── instalock_logo.ico    # Ícone para o .exe
+│   └── make_ico.py           # Script para gerar o .ico
 ├── src/
-│   ├── main.py           # UI principal (CustomTkinter) + lógica de poll
-│   ├── valorant_api.py   # Integração com a API do Valorant via valclient
-│   └── agents.py         # Busca e cache de agentes + ícones (valorant-api.com)
-├── requirements.txt      # Dependências Python
-├── build.bat             # Script de compilação → .exe standalone
+│   ├── main.py               # UI principal (CustomTkinter) + lógica de poll
+│   ├── valorant_api.py       # Integração com a API do Valorant via valclient
+│   └── agents.py             # Busca e cache de agentes + mapas (valorant-api.com)
+├── requirements.txt          # Dependências Python
+├── build.bat                 # Script de compilação → .exe standalone
 └── README.md
 ```
 
@@ -122,11 +139,15 @@ InstalockValorant/
 3. Poll a cada 150ms via fetch_presence():
    → sessionLoopState == "PREGAME" → fase de seleção detectada!
 
-4. Executa o instalock:
-   → pregame_select_character(agent_id)  ← hover (50ms)
-   → pregame_lock_character(agent_id)    ← trava definitivo
+4. Detecta o mapa atual via pregame_fetch_match()
+   → Usa o agente configurado para aquele mapa
+   → Fallback para o agente padrão se não houver configuração
 
-5. Hotkey global via pynput (sem privilégios de admin)
+5. Executa o instalock sem delay:
+   → pregame_select_character(agent_id)  ← select
+   → pregame_lock_character(agent_id)    ← trava definitivo 🔒
+
+6. Hotkey global via pynput (sem privilégios de admin)
 ```
 
 ---
@@ -165,5 +186,7 @@ Distribuído sob a licença MIT. Veja [LICENSE](LICENSE) para mais informações
 <div align="center">
 
 Desenvolvido por [@DevAlex-full](https://github.com/DevAlex-full)
+
+**🌐 [instalockvalorant.vercel.app](https://instalockvalorant.vercel.app)**
 
 </div>
