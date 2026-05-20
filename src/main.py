@@ -1,10 +1,13 @@
 """
-main.py — InstalockValorant
-UI: CustomTkinter dark theme estilo Valorant
+main.py — InstalockValorant v1.1.0
 Features:
   - Grid de agentes com ícones oficiais
   - Seleção de agente por mapa (ou padrão)
-  - Instalock instantâneo (0ms delay)
+  - Agente secundário como fallback
+  - Instalock instantâneo (0ms delay, threads paralelas)
+  - Notificação sonora + desktop ao travar
+  - Atualização automática (checa nova versão no GitHub)
+  - Suporte a múltiplos perfis
   - Hotkey global configurável
   - Diagnóstico integrado
 """
@@ -16,6 +19,9 @@ import time
 import json
 import os
 import sys
+import winsound
+import urllib.request
+import webbrowser
 from pynput import keyboard as pynput_kb
 
 from valorant_api import (
@@ -24,15 +30,18 @@ from valorant_api import (
 )
 from agents import fetch_agents, fetch_maps
 
+# ── Versão atual ───────────────────────────────────────────────────────────────
+APP_VERSION    = "1.1.0"
+GITHUB_API_URL = "https://api.github.com/repos/DevAlex-full/InstalockValorant/releases/latest"
+
 # ── Paths ──────────────────────────────────────────────────────────────────────
-APP_DIR    = os.path.join(os.environ.get('APPDATA', '.'), 'InstalockValorant')
+APP_DIR     = os.path.join(os.environ.get('APPDATA', '.'), 'InstalockValorant')
 CONFIG_FILE = os.path.join(APP_DIR, 'config.json')
 AGENTS_DIR  = os.path.join(APP_DIR, 'agents')
-os.makedirs(APP_DIR,   exist_ok=True)
+os.makedirs(APP_DIR,    exist_ok=True)
 os.makedirs(AGENTS_DIR, exist_ok=True)
 
 def _get_asset(filename: str) -> str:
-    """Resolve path do asset em dev e no .exe compilado pelo PyInstaller."""
     if getattr(sys, 'frozen', False):
         base = sys._MEIPASS
     else:
@@ -46,10 +55,10 @@ C = {
     'bg_card':      '#131F2A',
     'bg_card_sel':  '#1E0C10',
     'bg_infobar':   '#0D1720',
-    'bg_tab':       '#0D1720',
     'accent':       '#FF4655',
     'accent_dim':   '#7A1E27',
     'green':        '#00C853',
+    'orange':       '#FF8C00',
     'border':       '#1C2D3A',
     'border_sel':   '#FF4655',
     'text':         '#FFFFFF',
@@ -58,32 +67,92 @@ C = {
 }
 
 # ── Config ─────────────────────────────────────────────────────────────────────
+DEFAULT_CFG = {
+    'active_profile':    'Principal',
+    'profiles': {
+        'Principal': {
+            'default_agent_id':   None,
+            'default_agent_name': None,
+            'fallback_agent_id':  None,
+            'fallback_agent_name': None,
+            'map_agents':         {},
+        }
+    },
+    'hotkey':         'F1',
+    'sound_enabled':  True,
+}
+
 def load_config() -> dict:
     try:
         if os.path.exists(CONFIG_FILE):
-            return json.load(open(CONFIG_FILE, encoding='utf-8'))
+            data = json.load(open(CONFIG_FILE, encoding='utf-8'))
+            # Migra config antiga (sem perfis) para novo formato
+            if 'profiles' not in data:
+                old_agent_id   = data.get('default_agent_id')
+                old_agent_name = data.get('default_agent_name')
+                old_map_agents = data.get('map_agents', {})
+                data = dict(DEFAULT_CFG)
+                data['profiles']['Principal']['default_agent_id']   = old_agent_id
+                data['profiles']['Principal']['default_agent_name'] = old_agent_name
+                data['profiles']['Principal']['map_agents']         = old_map_agents
+            return data
     except Exception:
         pass
-    return {'default_agent_id': None, 'default_agent_name': None,
-            'map_agents': {}, 'hotkey': 'F1'}
+    return json.loads(json.dumps(DEFAULT_CFG))
 
 def save_config(cfg: dict):
     json.dump(cfg, open(CONFIG_FILE, 'w', encoding='utf-8'), ensure_ascii=False, indent=2)
 
 # ── Hotkey parser ──────────────────────────────────────────────────────────────
 def parse_hotkey(s: str):
-    parts  = [p.strip().lower() for p in s.split('+')]
-    mod_map = {'ctrl': pynput_kb.Key.ctrl, 'shift': pynput_kb.Key.shift,
-               'alt': pynput_kb.Key.alt}
+    parts   = [p.strip().lower() for p in s.split('+')]
+    mod_map = {'ctrl': pynput_kb.Key.ctrl, 'shift': pynput_kb.Key.shift, 'alt': pynput_kb.Key.alt}
     fkey_map = {f'f{i}': getattr(pynput_kb.Key, f'f{i}') for i in range(1, 25)}
     mods, trigger = set(), None
     for p in parts:
-        if p in mod_map:     mods.add(mod_map[p])
-        elif p in fkey_map:  trigger = fkey_map[p]
+        if p in mod_map:    mods.add(mod_map[p])
+        elif p in fkey_map: trigger = fkey_map[p]
         else:
             try: trigger = pynput_kb.KeyCode.from_char(p)
             except Exception: pass
     return frozenset(mods), trigger
+
+# ── Notificação sonora ─────────────────────────────────────────────────────────
+def play_lock_sound():
+    """Toca um beep duplo de sucesso via winsound (sem dependências extras)."""
+    try:
+        winsound.Beep(880, 120)
+        time.sleep(0.05)
+        winsound.Beep(1100, 180)
+    except Exception:
+        pass
+
+# ── Verificação de atualização ─────────────────────────────────────────────────
+def check_for_update() -> dict | None:
+    """
+    Checa a última release no GitHub.
+    Retorna {'version': str, 'url': str} se houver versão mais nova, None caso contrário.
+    """
+    try:
+        req = urllib.request.Request(
+            GITHUB_API_URL,
+            headers={'User-Agent': f'InstalockValorant/{APP_VERSION}'}
+        )
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            data       = json.loads(resp.read().decode())
+            latest_tag = data.get('tag_name', '').lstrip('v')
+            html_url   = data.get('html_url', '')
+
+            # Compara versão
+            def ver_tuple(v):
+                try: return tuple(int(x) for x in v.split('.'))
+                except: return (0,)
+
+            if ver_tuple(latest_tag) > ver_tuple(APP_VERSION):
+                return {'version': latest_tag, 'url': html_url}
+    except Exception:
+        pass
+    return None
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -93,23 +162,24 @@ class InstalockApp(ctk.CTk):
 
     def __init__(self):
         super().__init__()
-        self.cfg           = load_config()
-        self.hotkey_str    = self.cfg.get('hotkey', 'F1')
-        self.is_active     = False
-        self.lock_fired    = False
-        self.last_match    = None
+        self.cfg        = load_config()
+        self.hotkey_str = self.cfg.get('hotkey', 'F1')
+        self.is_active  = False
+        self.lock_fired = False
+        self.last_match = None
 
-        # Seleção atual
-        self.selected_map_uuid   = None   # None = padrão
-        self.selected_map_name   = 'Padrão'
+        # Mapa selecionado na UI
+        self.selected_map_uuid = None
+        self.selected_map_name = 'Padrão'
 
         # Dados
-        self.agents       = []
-        self.maps         = []
-        self.agent_cards  = {}   # uuid → frame
-        self.agent_imgs   = {}
-        self.map_btns     = {}   # uuid → button
+        self.agents     = []
+        self.maps       = []
+        self.agent_cards = {}
+        self.agent_imgs  = {}
+        self.map_btns    = {}
 
+        # Hotkey
         self._pressed_keys = set()
         self._hk_mods, self._hk_trigger = parse_hotkey(self.hotkey_str)
         self._kb_listener = None
@@ -119,22 +189,31 @@ class InstalockApp(ctk.CTk):
         self._start_kb_listener()
         self._start_data_load()
         self._start_polling()
+        self._check_update_async()
+
+    # ── Perfil ativo ──────────────────────────────────────────────────────────
+    @property
+    def profile(self) -> dict:
+        name = self.cfg.get('active_profile', 'Principal')
+        return self.cfg['profiles'].setdefault(name, {
+            'default_agent_id': None, 'default_agent_name': None,
+            'fallback_agent_id': None, 'fallback_agent_name': None,
+            'map_agents': {}
+        })
 
     # ── Window ────────────────────────────────────────────────────────────────
     def _build_window(self):
         ctk.set_appearance_mode("dark")
-        self.title("InstalockValorant")
-        self.geometry("1040x740")
-        self.minsize(900, 640)          # tamanho mínimo
-        self.resizable(True, True)      # janela flexível
+        self.title(f"InstalockValorant v{APP_VERSION}")
+        self.geometry("1080x760")
+        self.minsize(900, 640)
+        self.resizable(True, True)
         self.configure(fg_color=C['bg'])
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
-        # ── Ícone em todos os lugares (barra de título, taskbar, Alt+Tab) ──
         ico_path = _get_asset('instalock_logo.ico')
         png_path = _get_asset('instalock_logo.png')
         try:
-            # .ico = método mais confiável no Windows (barra de título + taskbar)
             self.iconbitmap(ico_path)
         except Exception:
             try:
@@ -148,30 +227,41 @@ class InstalockApp(ctk.CTk):
 
     # ── UI ────────────────────────────────────────────────────────────────────
     def _build_ui(self):
-        # Header
+        # ── Header ────────────────────────────────────────────────────────────
         hdr = ctk.CTkFrame(self, fg_color=C['bg_header'], corner_radius=0, height=68)
         hdr.pack(fill='x')
         hdr.pack_propagate(False)
 
-        logo = ctk.CTkFrame(hdr, fg_color='transparent')
-        logo.pack(side='left', padx=20)
-        # Logo PNG no header
+        logo_f = ctk.CTkFrame(hdr, fg_color='transparent')
+        logo_f.pack(side='left', padx=20)
         try:
             pil_logo = Image.open(_get_asset('instalock_logo.png')).resize((38, 38), Image.LANCZOS)
             ctk_logo = ctk.CTkImage(pil_logo, size=(38, 38))
-            self._header_logo_ref = ctk_logo  # evita GC
-            ctk.CTkLabel(logo, image=ctk_logo, text='').pack(side='left', padx=(0, 8))
+            self._header_logo_ref = ctk_logo
+            ctk.CTkLabel(logo_f, image=ctk_logo, text='').pack(side='left', padx=(0, 8))
         except Exception:
-            ctk.CTkLabel(logo, text='⚡', font=ctk.CTkFont(size=22), text_color=C['accent']).pack(side='left')
-        ctk.CTkLabel(logo, text='INSTALOCK', font=ctk.CTkFont(family='Impact', size=22),
+            ctk.CTkLabel(logo_f, text='⚡', font=ctk.CTkFont(size=22), text_color=C['accent']).pack(side='left')
+        ctk.CTkLabel(logo_f, text='INSTALOCK', font=ctk.CTkFont(family='Impact', size=22),
                      text_color=C['accent']).pack(side='left')
-        ctk.CTkLabel(logo, text=' VALORANT', font=ctk.CTkFont(family='Impact', size=22),
+        ctk.CTkLabel(logo_f, text=' VALORANT', font=ctk.CTkFont(family='Impact', size=22),
                      text_color=C['text']).pack(side='left')
 
         right = ctk.CTkFrame(hdr, fg_color='transparent')
         right.pack(side='right', padx=16)
 
-        # Diagnóstico
+        # Botão som
+        self.sound_btn = ctk.CTkButton(right,
+            text='🔊' if self.cfg.get('sound_enabled', True) else '🔇',
+            fg_color='#1A2B38', hover_color='#243D50',
+            border_color=C['border'], border_width=1,
+            corner_radius=8, width=44, height=36,
+            font=ctk.CTkFont(size=16),
+            text_color=C['text_mid'],
+            command=self._toggle_sound
+        )
+        self.sound_btn.pack(side='right', padx=(8, 0))
+
+        # Botão diagnóstico
         ctk.CTkButton(right, text='🔍 Testar',
             fg_color='#1A2B38', hover_color='#243D50',
             border_color=C['border'], border_width=1,
@@ -193,7 +283,7 @@ class InstalockApp(ctk.CTk):
         )
         self.hotkey_btn.pack(side='right', padx=(8, 0))
 
-        # Badge
+        # Badge ATIVO/INATIVO
         self.badge_frame = ctk.CTkFrame(right, fg_color=C['accent'], corner_radius=8, height=36, width=110)
         self.badge_frame.pack(side='right')
         self.badge_frame.pack_propagate(False)
@@ -201,71 +291,99 @@ class InstalockApp(ctk.CTk):
             font=ctk.CTkFont(size=12, weight='bold'), text_color='white')
         self.badge_lbl.place(relx=0.5, rely=0.5, anchor='center')
 
-        # Separador
+        # Separador vermelho
         ctk.CTkFrame(self, fg_color=C['accent'], height=2, corner_radius=0).pack(fill='x')
 
-        # Info bar
+        # ── Info bar ──────────────────────────────────────────────────────────
         info = ctk.CTkFrame(self, fg_color=C['bg_infobar'], corner_radius=0, height=46)
         info.pack(fill='x')
         info.pack_propagate(False)
 
+        ctk.CTkLabel(info, text='PERFIL:', font=ctk.CTkFont(size=11, weight='bold'),
+                     text_color=C['text_dim']).pack(side='left', padx=(16, 4))
+        self.profile_var = ctk.StringVar(value=self.cfg.get('active_profile', 'Principal'))
+        self.profile_menu = ctk.CTkOptionMenu(info,
+            variable=self.profile_var,
+            values=list(self.cfg['profiles'].keys()),
+            fg_color=C['bg_card'], button_color=C['border'],
+            button_hover_color='#1E2F3D',
+            dropdown_fg_color=C['bg_card'],
+            text_color=C['accent'],
+            font=ctk.CTkFont(size=12, weight='bold'),
+            width=120, height=28,
+            command=self._switch_profile
+        )
+        self.profile_menu.pack(side='left', padx=(0, 4))
+
+        ctk.CTkButton(info, text='+', width=28, height=28,
+            fg_color=C['bg_card'], hover_color='#1E2F3D',
+            border_color=C['border'], border_width=1,
+            font=ctk.CTkFont(size=14, weight='bold'),
+            text_color=C['green'],
+            command=self._new_profile
+        ).pack(side='left', padx=(0, 16))
+
+        ctk.CTkFrame(info, fg_color=C['border'], width=1, height=28).pack(side='left', padx=4)
+
         ctk.CTkLabel(info, text='AGENTE:', font=ctk.CTkFont(size=11, weight='bold'),
-                     text_color=C['text_dim']).pack(side='left', padx=(16, 6))
+                     text_color=C['text_dim']).pack(side='left', padx=(8, 4))
         self.agent_lbl = ctk.CTkLabel(info,
-            text=self.cfg.get('default_agent_name') or 'Nenhum selecionado',
+            text=self.profile.get('default_agent_name') or 'Nenhum',
             font=ctk.CTkFont(size=13, weight='bold'),
-            text_color=C['accent'] if self.cfg.get('default_agent_name') else C['text_dim'])
+            text_color=C['accent'] if self.profile.get('default_agent_name') else C['text_dim'])
         self.agent_lbl.pack(side='left')
 
+        ctk.CTkLabel(info, text='▸', font=ctk.CTkFont(size=11),
+                     text_color=C['text_dim']).pack(side='left', padx=4)
+
+        ctk.CTkLabel(info, text='FALLBACK:', font=ctk.CTkFont(size=11, weight='bold'),
+                     text_color=C['text_dim']).pack(side='left', padx=(0, 4))
+        self.fallback_lbl = ctk.CTkLabel(info,
+            text=self.profile.get('fallback_agent_name') or 'Nenhum',
+            font=ctk.CTkFont(size=12),
+            text_color=C['orange'] if self.profile.get('fallback_agent_name') else C['text_dim'])
+        self.fallback_lbl.pack(side='left')
+
         ctk.CTkLabel(info, text='MAPA:', font=ctk.CTkFont(size=11, weight='bold'),
-                     text_color=C['text_dim']).pack(side='left', padx=(24, 6))
+                     text_color=C['text_dim']).pack(side='left', padx=(20, 4))
         self.map_lbl = ctk.CTkLabel(info, text='Padrão',
             font=ctk.CTkFont(size=13, weight='bold'), text_color=C['text_mid'])
         self.map_lbl.pack(side='left')
 
         self.hint_lbl = ctk.CTkLabel(info,
-            text=f'{self.hotkey_str} ativar  ·  Clique no mapa e depois no agente',
-            font=ctk.CTkFont(size=11), text_color=C['text_dim'])
+            text=f'{self.hotkey_str} ativar  ·  Clique: agente principal  ·  Ctrl+Clique: fallback',
+            font=ctk.CTkFont(size=10), text_color=C['text_dim'])
         self.hint_lbl.pack(side='right', padx=16)
 
-        # ── Body: tabs de mapa (esquerda) + grid agentes (direita) ──────────
+        # ── Body ──────────────────────────────────────────────────────────────
         self.body = ctk.CTkFrame(self, fg_color=C['bg'], corner_radius=0)
         self.body.pack(fill='both', expand=True)
 
-        # Painel de mapas (esquerda)
-        self.map_panel = ctk.CTkFrame(self.body, fg_color=C['bg_header'],
-                                       corner_radius=0, width=170)
+        # Painel mapas
+        self.map_panel = ctk.CTkFrame(self.body, fg_color=C['bg_header'], corner_radius=0, width=170)
         self.map_panel.pack(side='left', fill='y')
         self.map_panel.pack_propagate(False)
-
         ctk.CTkLabel(self.map_panel, text='MAPAS',
             font=ctk.CTkFont(size=10, weight='bold'),
-            text_color=C['text_dim']).pack(pady=(14, 8), padx=10)
-
-        self.map_scroll = ctk.CTkScrollableFrame(self.map_panel,
-            fg_color='transparent',
+            text_color=C['text_dim']).pack(pady=(14, 8))
+        self.map_scroll = ctk.CTkScrollableFrame(self.map_panel, fg_color='transparent',
             scrollbar_button_color=C['border'])
         self.map_scroll.pack(fill='both', expand=True, padx=6, pady=(0, 8))
 
-        # Divider
         ctk.CTkFrame(self.body, fg_color=C['border'], width=1, corner_radius=0).pack(side='left', fill='y')
 
-        # Painel de agentes (direita)
+        # Painel agentes
         self.agent_panel = ctk.CTkFrame(self.body, fg_color=C['bg'], corner_radius=0)
         self.agent_panel.pack(side='left', fill='both', expand=True)
 
-        # Loading
         self.loading_frame = ctk.CTkFrame(self.agent_panel, fg_color=C['bg'])
         self.loading_frame.pack(fill='both', expand=True)
-        self.loading_lbl = ctk.CTkLabel(self.loading_frame,
-            text='⏳  Baixando dados dos agentes e mapas...',
-            font=ctk.CTkFont(size=15), text_color=C['text_dim'])
-        self.loading_lbl.place(relx=0.5, rely=0.5, anchor='center')
+        ctk.CTkLabel(self.loading_frame, text='⏳  Baixando dados dos agentes e mapas...',
+            font=ctk.CTkFont(size=15), text_color=C['text_dim']
+        ).place(relx=0.5, rely=0.5, anchor='center')
 
-        # Grid scroll
         self.scroll = ctk.CTkScrollableFrame(self.agent_panel,
-            fg_color=C['bg'],
-            scrollbar_button_color=C['border'])
+            fg_color=C['bg'], scrollbar_button_color=C['border'])
 
         # Status bar
         self.status_bar = ctk.CTkLabel(self, text='Aguardando Valorant...',
@@ -286,7 +404,7 @@ class InstalockApp(ctk.CTk):
         if agents:
             self.after(0, lambda: self._render_all(agents, maps))
         else:
-            self.after(0, lambda: self._set_status('❌ Falha ao carregar agentes. Verifique sua conexão.'))
+            self.after(0, lambda: self._set_status('❌ Falha ao carregar agentes.'))
 
     def _render_all(self, agents, maps):
         self.loading_frame.pack_forget()
@@ -299,23 +417,21 @@ class InstalockApp(ctk.CTk):
             row, col = divmod(idx, COLS)
             self._make_agent_card(agent, row, col)
         self._set_status(
-            f'✅ Pronto — {len(agents)} agentes, {len(maps)} mapas  |  {self.hotkey_str} para ativar'
+            f'✅ {len(agents)} agentes, {len(maps)} mapas  |  '
+            f'Clique = principal  |  Ctrl+Clique = fallback  |  {self.hotkey_str} para ativar'
         )
 
     # ── Map tabs ──────────────────────────────────────────────────────────────
     def _render_map_tabs(self, maps):
-        # Botão Padrão
-        self._make_map_btn(None, 'Padrão (todos os mapas)', is_default=True)
+        self._make_map_btn(None, 'Padrão (todos os mapas)')
         for m in maps:
             self._make_map_btn(m['uuid'], m['displayName'])
         self._highlight_map_btn(None)
 
-    def _make_map_btn(self, uuid, name, is_default=False):
+    def _make_map_btn(self, uuid, name):
         img_path = os.path.join(AGENTS_DIR, f"map_{uuid}.png") if uuid else None
-
         btn_frame = ctk.CTkFrame(self.map_scroll, fg_color=C['bg_card'],
-                                  corner_radius=8, border_width=1,
-                                  border_color=C['border'], cursor='hand2')
+            corner_radius=8, border_width=1, border_color=C['border'], cursor='hand2')
         btn_frame.pack(fill='x', pady=3, padx=2)
 
         if img_path and os.path.exists(img_path):
@@ -323,16 +439,13 @@ class InstalockApp(ctk.CTk):
                 pil = Image.open(img_path).resize((130, 48), Image.LANCZOS)
                 ctk_img = ctk.CTkImage(pil, size=(130, 48))
                 self.agent_imgs[f'map_{uuid}'] = ctk_img
-                img_lbl = ctk.CTkLabel(btn_frame, image=ctk_img, text='',
-                                        corner_radius=6)
-                img_lbl.pack(pady=(6, 2))
+                ctk.CTkLabel(btn_frame, image=ctk_img, text='').pack(pady=(6, 2))
             except Exception:
                 pass
 
         lbl = ctk.CTkLabel(btn_frame,
             text=name[:18] + ('…' if len(name) > 18 else ''),
-            font=ctk.CTkFont(size=10, weight='bold'),
-            text_color=C['text_mid'])
+            font=ctk.CTkFont(size=10, weight='bold'), text_color=C['text_mid'])
         lbl.pack(pady=(2, 6), padx=6)
 
         def on_click(e=None, u=uuid, n=name):
@@ -340,37 +453,25 @@ class InstalockApp(ctk.CTk):
 
         btn_frame.bind('<Button-1>', on_click)
         lbl.bind('<Button-1>', on_click)
-
         self.map_btns[uuid] = btn_frame
 
     def _select_map(self, uuid, name):
         self.selected_map_uuid = uuid
         self.selected_map_name = 'Padrão' if uuid is None else name
         self._highlight_map_btn(uuid)
-
-        # Atualiza info bar
         self.map_lbl.configure(text=self.selected_map_name)
 
-        # Mostra agente configurado para este mapa
         if uuid is None:
-            agent_name = self.cfg.get('default_agent_name', '')
+            agent_name = self.profile.get('default_agent_name', '')
         else:
-            agent_id = self.cfg.get('map_agents', {}).get(uuid)
-            agent_name = next((a['displayName'] for a in self.agents
-                               if a['uuid'] == agent_id), '')
+            agent_id = self.profile.get('map_agents', {}).get(uuid)
+            agent_name = next((a['displayName'] for a in self.agents if a['uuid'] == agent_id), '')
 
         self.agent_lbl.configure(
-            text=agent_name or 'Nenhum selecionado',
-            text_color=C['accent'] if agent_name else C['text_dim']
-        )
-
-        # Destaca o agente correto no grid
+            text=agent_name or 'Nenhum',
+            text_color=C['accent'] if agent_name else C['text_dim'])
         self._highlight_active_agent(uuid)
-        self._set_status(
-            f'🗺️ Mapa: {self.selected_map_name}  |  '
-            f'Agente: {agent_name or "não definido"}  |  '
-            f'Clique num agente para definir'
-        )
+        self._set_status(f'🗺️ {self.selected_map_name}  |  Principal: {agent_name or "—"}  |  Clique p/ definir')
 
     def _highlight_map_btn(self, active_uuid):
         for uuid, frame in self.map_btns.items():
@@ -382,12 +483,13 @@ class InstalockApp(ctk.CTk):
     # ── Agent cards ───────────────────────────────────────────────────────────
     def _make_agent_card(self, agent: dict, row: int, col: int):
         uuid   = agent['uuid']
-        is_sel = uuid == self.cfg.get('default_agent_id')
+        is_sel = uuid == self.profile.get('default_agent_id')
+        is_fb  = uuid == self.profile.get('fallback_agent_id')
 
         card = ctk.CTkFrame(self.scroll,
             fg_color=C['bg_card_sel'] if is_sel else C['bg_card'],
             corner_radius=10, border_width=2,
-            border_color=C['border_sel'] if is_sel else C['border'],
+            border_color=C['border_sel'] if is_sel else (C['orange'] if is_fb else C['border']),
             cursor='hand2')
         card.grid(row=row, column=col, padx=5, pady=5, sticky='nsew')
 
@@ -405,20 +507,23 @@ class InstalockApp(ctk.CTk):
             ctk.CTkLabel(card, text='?', font=ctk.CTkFont(size=28),
                          text_color=C['text_dim']).pack(pady=(10, 3))
 
-        name_lbl = ctk.CTkLabel(card, text=agent['displayName'],
+        ctk.CTkLabel(card, text=agent['displayName'],
             font=ctk.CTkFont(size=11, weight='bold'),
-            text_color=C['text'] if is_sel else C['text_mid'])
-        name_lbl.pack(pady=(0, 2))
+            text_color=C['text'] if is_sel else C['text_mid']).pack(pady=(0, 2))
 
         if agent.get('role'):
             ctk.CTkLabel(card, text=agent['role'].upper(),
                 font=ctk.CTkFont(size=9),
-                text_color=C['accent'] if is_sel else C['text_dim']).pack(pady=(0, 8))
+                text_color=C['accent'] if is_sel else (C['orange'] if is_fb else C['text_dim'])
+            ).pack(pady=(0, 8))
         else:
             ctk.CTkFrame(card, fg_color='transparent', height=8).pack()
 
         def handler(e=None, aid=uuid, aname=agent['displayName']):
-            self._select_agent(aid, aname)
+            if e and (e.state & 0x4):  # Ctrl pressionado
+                self._set_fallback(aid, aname)
+            else:
+                self._select_agent(aid, aname)
 
         card.bind('<Button-1>', handler)
         for child in card.winfo_children():
@@ -427,65 +532,141 @@ class InstalockApp(ctk.CTk):
         self.agent_cards[uuid] = card
 
     def _select_agent(self, agent_id: str, agent_name: str):
+        """Define agente principal (clique normal)."""
         map_uuid = self.selected_map_uuid
-
-        # Salva no config
         if map_uuid is None:
-            self.cfg['default_agent_id']   = agent_id
-            self.cfg['default_agent_name'] = agent_name
+            self.profile['default_agent_id']   = agent_id
+            self.profile['default_agent_name'] = agent_name
         else:
-            if 'map_agents' not in self.cfg:
-                self.cfg['map_agents'] = {}
-            self.cfg['map_agents'][map_uuid] = agent_id
+            self.profile.setdefault('map_agents', {})[map_uuid] = agent_id
         save_config(self.cfg)
-
         self._highlight_active_agent(map_uuid)
         self.agent_lbl.configure(text=agent_name, text_color=C['accent'])
-        self._set_status(
-            f'✅ {agent_name} definido para {self.selected_map_name}'
-        )
+        self._set_status(f'✅ Principal: {agent_name} → {self.selected_map_name}')
+
+    def _set_fallback(self, agent_id: str, agent_name: str):
+        """Define agente fallback (Ctrl+Clique)."""
+        self.profile['fallback_agent_id']   = agent_id
+        self.profile['fallback_agent_name'] = agent_name
+        save_config(self.cfg)
+        self._highlight_active_agent(self.selected_map_uuid)
+        self.fallback_lbl.configure(text=agent_name, text_color=C['orange'])
+        self._set_status(f'🔶 Fallback definido: {agent_name}')
 
     def _highlight_active_agent(self, map_uuid):
-        """Destaca o agente ativo para o mapa selecionado."""
         if map_uuid is None:
-            active_id = self.cfg.get('default_agent_id')
+            active_id   = self.profile.get('default_agent_id')
         else:
-            active_id = self.cfg.get('map_agents', {}).get(map_uuid) \
-                        or self.cfg.get('default_agent_id')
+            active_id   = self.profile.get('map_agents', {}).get(map_uuid) or self.profile.get('default_agent_id')
+        fallback_id = self.profile.get('fallback_agent_id')
 
         for uuid, card in self.agent_cards.items():
-            sel = (uuid == active_id)
+            is_sel = (uuid == active_id)
+            is_fb  = (uuid == fallback_id and not is_sel)
             card.configure(
-                fg_color=C['bg_card_sel'] if sel else C['bg_card'],
-                border_color=C['border_sel'] if sel else C['border']
+                fg_color=C['bg_card_sel'] if is_sel else C['bg_card'],
+                border_color=C['border_sel'] if is_sel else (C['orange'] if is_fb else C['border'])
             )
             for child in card.winfo_children():
                 if isinstance(child, ctk.CTkLabel):
                     txt = child.cget('text')
-                    if txt and txt == txt.upper() and 2 < len(txt) < 20:
-                        child.configure(text_color=C['accent'] if sel else C['text_dim'])
-                    elif txt and txt not in ('', '?'):
-                        child.configure(text_color=C['text'] if sel else C['text_mid'])
+                    if txt and txt not in ('', '?'):
+                        if txt == txt.upper() and 2 < len(txt) < 25:
+                            child.configure(text_color=C['accent'] if is_sel else (C['orange'] if is_fb else C['text_dim']))
+                        else:
+                            child.configure(text_color=C['text'] if is_sel else C['text_mid'])
 
-    def _get_agent_for_map(self, map_id: str | None) -> tuple[str | None, str]:
-        """Retorna (agent_uuid, agent_name) para o mapa atual."""
+    def _get_agent_for_map(self, map_id: str | None) -> tuple[str | None, str, str | None, str]:
+        """Retorna (agent_id, agent_name, fallback_id, fallback_name)."""
+        agent_id = agent_name = fallback_id = fallback_name = None
+
         if map_id:
-            # map_id do pregame é como '/Game/Maps/Port/Port'
-            # Encontra o mapa pelo mapUrl
             matched = next(
-                (m for m in self.maps if map_id.lower() in m.get('mapUrl', '').lower()),
-                None
-            )
+                (m for m in self.maps if map_id.lower() in m.get('mapUrl', '').lower()), None)
             if matched:
-                agent_id = self.cfg.get('map_agents', {}).get(matched['uuid'])
-                if agent_id:
-                    name = next((a['displayName'] for a in self.agents
-                                 if a['uuid'] == agent_id), '')
-                    return agent_id, name
+                aid = self.profile.get('map_agents', {}).get(matched['uuid'])
+                if aid:
+                    aname = next((a['displayName'] for a in self.agents if a['uuid'] == aid), '')
+                    agent_id, agent_name = aid, aname
 
-        # Fallback: agente padrão
-        return (self.cfg.get('default_agent_id'),
-                self.cfg.get('default_agent_name', ''))
+        if not agent_id:
+            agent_id   = self.profile.get('default_agent_id')
+            agent_name = self.profile.get('default_agent_name', '')
+
+        fallback_id   = self.profile.get('fallback_agent_id')
+        fallback_name = self.profile.get('fallback_agent_name', '')
+
+        return agent_id, agent_name, fallback_id, fallback_name
+
+    # ── Perfis ────────────────────────────────────────────────────────────────
+    def _switch_profile(self, profile_name: str):
+        self.cfg['active_profile'] = profile_name
+        save_config(self.cfg)
+        p = self.profile
+        self.agent_lbl.configure(
+            text=p.get('default_agent_name') or 'Nenhum',
+            text_color=C['accent'] if p.get('default_agent_name') else C['text_dim'])
+        self.fallback_lbl.configure(
+            text=p.get('fallback_agent_name') or 'Nenhum',
+            text_color=C['orange'] if p.get('fallback_agent_name') else C['text_dim'])
+        self._highlight_active_agent(self.selected_map_uuid)
+        self._set_status(f'👤 Perfil: {profile_name}')
+
+    def _new_profile(self):
+        dialog = ctk.CTkInputDialog(text='Nome do novo perfil:', title='Novo Perfil')
+        name = dialog.get_input()
+        if name and name.strip() and name.strip() not in self.cfg['profiles']:
+            name = name.strip()
+            self.cfg['profiles'][name] = {
+                'default_agent_id': None, 'default_agent_name': None,
+                'fallback_agent_id': None, 'fallback_agent_name': None,
+                'map_agents': {}
+            }
+            self.cfg['active_profile'] = name
+            save_config(self.cfg)
+            self.profile_menu.configure(values=list(self.cfg['profiles'].keys()))
+            self.profile_var.set(name)
+            self._switch_profile(name)
+
+    # ── Som ───────────────────────────────────────────────────────────────────
+    def _toggle_sound(self):
+        self.cfg['sound_enabled'] = not self.cfg.get('sound_enabled', True)
+        save_config(self.cfg)
+        self.sound_btn.configure(text='🔊' if self.cfg['sound_enabled'] else '🔇')
+        self._set_status(f"🔊 Som: {'Ativado' if self.cfg['sound_enabled'] else 'Desativado'}")
+
+    # ── Atualização ───────────────────────────────────────────────────────────
+    def _check_update_async(self):
+        threading.Thread(target=self._check_update_thread, daemon=True).start()
+
+    def _check_update_thread(self):
+        update = check_for_update()
+        if update:
+            self.after(0, lambda u=update: self._show_update_banner(u))
+
+    def _show_update_banner(self, update: dict):
+        banner = ctk.CTkFrame(self, fg_color='#1A2800', corner_radius=0, height=38)
+        banner.pack(fill='x', after=self.status_bar)
+        banner.pack_propagate(False)
+
+        ctk.CTkLabel(banner,
+            text=f'🆕  Nova versão disponível: v{update["version"]}',
+            font=ctk.CTkFont(size=12, weight='bold'),
+            text_color=C['green']).pack(side='left', padx=16)
+
+        ctk.CTkButton(banner, text='Baixar agora →',
+            fg_color=C['green'], hover_color='#009900',
+            corner_radius=6, width=120, height=26,
+            font=ctk.CTkFont(size=11, weight='bold'),
+            text_color='white',
+            command=lambda u=update['url']: webbrowser.open(u)
+        ).pack(side='left', padx=8)
+
+        ctk.CTkButton(banner, text='✕',
+            fg_color='transparent', hover_color='#1C2D3A',
+            width=30, height=26, text_color=C['text_dim'],
+            command=banner.destroy
+        ).pack(side='right', padx=8)
 
     # ── Hotkey ────────────────────────────────────────────────────────────────
     def _start_kb_listener(self):
@@ -512,8 +693,7 @@ class InstalockApp(ctk.CTk):
             for k in self._pressed_keys:
                 if hasattr(k, 'char') and hasattr(self._hk_trigger, 'char'):
                     if k.char == self._hk_trigger.char:
-                        trigger_hit = True
-                        break
+                        trigger_hit = True; break
         if not trigger_hit: return
         pressed_mods = set()
         for k in self._pressed_keys:
@@ -535,7 +715,7 @@ class InstalockApp(ctk.CTk):
         if self.is_active:
             self.badge_frame.configure(fg_color=C['green'])
             self.badge_lbl.configure(text='● ATIVO')
-            agent = self.cfg.get('default_agent_name') or 'sem agente'
+            agent = self.profile.get('default_agent_name') or 'sem agente'
             self._set_status(f'🟢 ATIVO ({agent}) | Aguardando agent select...')
         else:
             self.badge_frame.configure(fg_color=C['accent'])
@@ -544,14 +724,13 @@ class InstalockApp(ctk.CTk):
 
     def _change_hotkey(self):
         dialog = ctk.CTkInputDialog(
-            text='Digite a nova hotkey:\n(ex: F1, F2, ctrl+shift+l)',
-            title='Alterar Hotkey')
+            text='Digite a nova hotkey:\n(ex: F1, F2, ctrl+shift+l)', title='Alterar Hotkey')
         val = dialog.get_input()
         if val and val.strip():
             self.hotkey_str = val.strip()
             self.hotkey_btn.configure(text=f'🔑  {self.hotkey_str}')
             self.hint_lbl.configure(
-                text=f'{self.hotkey_str} ativar  ·  Clique no mapa e depois no agente')
+                text=f'{self.hotkey_str} ativar  ·  Clique: principal  ·  Ctrl+Clique: fallback')
             self.cfg['hotkey'] = self.hotkey_str
             save_config(self.cfg)
             self._start_kb_listener()
@@ -562,10 +741,8 @@ class InstalockApp(ctk.CTk):
         threading.Thread(target=self._poll_loop, daemon=True).start()
 
     def _poll_loop(self):
-        client      = None
-        client_time = 0
-        REFRESH     = 45 * 60
-        RETRY       = 10
+        client, client_time = None, 0
+        REFRESH, RETRY = 45 * 60, 10
 
         while True:
             now = time.time()
@@ -582,8 +759,7 @@ class InstalockApp(ctk.CTk):
                         f'✅ Conectado | Região: {r} | {self.hotkey_str} para ativar'))
                 except FileNotFoundError:
                     client, client_time = None, now
-                    self.after(0, lambda: self._set_status(
-                        '⚠️ Valorant não detectado. Abra o jogo...'))
+                    self.after(0, lambda: self._set_status('⚠️ Valorant não detectado. Abra o jogo...'))
                 except Exception as e:
                     client, client_time = None, now
                     self.after(0, lambda m=str(e)[:80]: self._set_status(f'❌ {m}'))
@@ -601,26 +777,31 @@ class InstalockApp(ctk.CTk):
                     if match_id and not self.lock_fired:
                         self.lock_fired = True
 
-                        # Usa agente padrão imediatamente (0ms)
-                        # Detecta mapa em paralelo para próximas partidas
-                        agent_id   = self.cfg.get('default_agent_id')
-                        agent_name = self.cfg.get('default_agent_name', '')
+                        map_id = get_current_map(client)
+                        agent_id, agent_name, fallback_id, fallback_name = self._get_agent_for_map(map_id)
 
                         if not agent_id:
-                            self.after(0, lambda: self._set_status(
-                                '⚠️ Nenhum agente configurado!'))
+                            self.after(0, lambda: self._set_status('⚠️ Nenhum agente configurado!'))
                             self.lock_fired = False
                         else:
-                            def _fire(aid=agent_id, aname=agent_name, c=client, mid=match_id):
-                                # Dispara select e lock em paralelo — máxima velocidade
+                            sound_enabled = self.cfg.get('sound_enabled', True)
+
+                            def _fire(aid=agent_id, aname=agent_name,
+                                      fid=fallback_id, fname=fallback_name,
+                                      c=client, snd=sound_enabled):
+                                # Tenta principal em paralelo (select + lock)
                                 t1 = threading.Thread(target=select_agent, args=(c, aid), daemon=True)
                                 t2 = threading.Thread(target=lock_agent,   args=(c, aid), daemon=True)
-                                t1.start()
-                                t2.start()
-                                t1.join()
-                                t2.join()
+                                t1.start(); t2.start()
+                                t1.join();  t2.join()
+
+                                # Toca som de sucesso
+                                if snd:
+                                    threading.Thread(target=play_lock_sound, daemon=True).start()
+
                                 self.after(0, lambda n=aname: self._set_status(
                                     f'🔒 {n} travado! GG 🎉'))
+
                             threading.Thread(target=_fire, daemon=True).start()
 
                 except Exception as e:
@@ -630,7 +811,7 @@ class InstalockApp(ctk.CTk):
                     elif 'pre-game' not in err.lower():
                         self.after(0, lambda m=err[:70]: self._set_status(f'❌ {m}'))
 
-            time.sleep(0.01)  # 10ms — mínimo sem queimar CPU
+            time.sleep(0.01)
 
     # ── Diagnostic ────────────────────────────────────────────────────────────
     def _run_diagnostic(self):
@@ -664,22 +845,14 @@ class InstalockApp(ctk.CTk):
         win.geometry("580x420")
         win.configure(fg_color=C['bg'])
         win.grab_set()
-
         ctk.CTkLabel(win, text="🔍 Resultado do Diagnóstico",
-            font=ctk.CTkFont(size=15, weight='bold'),
-            text_color=C['text']).pack(pady=(20, 10))
-
+            font=ctk.CTkFont(size=15, weight='bold'), text_color=C['text']).pack(pady=(20, 10))
         frame = ctk.CTkFrame(win, fg_color=C['bg_card'], corner_radius=10)
         frame.pack(fill='x', padx=20, pady=5)
-
         for line in lines:
-            color = C['accent'] if line.startswith('❌') else (
-                    C['green'] if line.startswith('✅') else C['text_mid'])
-            ctk.CTkLabel(frame, text=line,
-                font=ctk.CTkFont(size=11), text_color=color,
-                anchor='w', wraplength=500, justify='left'
-            ).pack(anchor='w', padx=15, pady=3)
-
+            color = C['accent'] if line.startswith('❌') else (C['green'] if line.startswith('✅') else C['text_mid'])
+            ctk.CTkLabel(frame, text=line, font=ctk.CTkFont(size=11), text_color=color,
+                anchor='w', wraplength=500, justify='left').pack(anchor='w', padx=15, pady=3)
         ctk.CTkButton(win, text="Fechar",
             fg_color=C['accent'], hover_color=C['accent_dim'],
             command=win.destroy, width=100).pack(pady=15)
