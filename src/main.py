@@ -599,25 +599,29 @@ class InstalockApp(ctk.CTk):
                         self.last_match, self.lock_fired = None, False
 
                     if match_id and not self.lock_fired:
-                        # Detecta mapa e escolhe agente correto
-                        map_id    = get_current_map(client)
-                        agent_id, agent_name = self._get_agent_for_map(map_id)
+                        self.lock_fired = True
+
+                        # Usa agente padrão imediatamente (0ms)
+                        # Detecta mapa em paralelo para próximas partidas
+                        agent_id   = self.cfg.get('default_agent_id')
+                        agent_name = self.cfg.get('default_agent_name', '')
 
                         if not agent_id:
                             self.after(0, lambda: self._set_status(
-                                '⚠️ Nenhum agente configurado! Selecione um agente.'))
+                                '⚠️ Nenhum agente configurado!'))
+                            self.lock_fired = False
                         else:
-                            self.after(0, lambda n=agent_name: self._set_status(
-                                f'🎯 Agent select! Executando instalock: {n}...'))
-
-                            # ⚡ ZERO DELAY — select e lock imediatos
-                            select_agent(client, agent_id)
-                            lock_agent(client, agent_id)
-                            self.lock_fired = True
-                            client_time = 0
-
-                            self.after(0, lambda n=agent_name: self._set_status(
-                                f'🔒 {n} travado! GG 🎉'))
+                            def _fire(aid=agent_id, aname=agent_name, c=client, mid=match_id):
+                                # Dispara select e lock em paralelo — máxima velocidade
+                                t1 = threading.Thread(target=select_agent, args=(c, aid), daemon=True)
+                                t2 = threading.Thread(target=lock_agent,   args=(c, aid), daemon=True)
+                                t1.start()
+                                t2.start()
+                                t1.join()
+                                t2.join()
+                                self.after(0, lambda n=aname: self._set_status(
+                                    f'🔒 {n} travado! GG 🎉'))
+                            threading.Thread(target=_fire, daemon=True).start()
 
                 except Exception as e:
                     err = str(e)
@@ -626,7 +630,7 @@ class InstalockApp(ctk.CTk):
                     elif 'pre-game' not in err.lower():
                         self.after(0, lambda m=err[:70]: self._set_status(f'❌ {m}'))
 
-            time.sleep(0.1)
+            time.sleep(0.01)  # 10ms — mínimo sem queimar CPU
 
     # ── Diagnostic ────────────────────────────────────────────────────────────
     def _run_diagnostic(self):
