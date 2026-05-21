@@ -25,7 +25,7 @@ import webbrowser
 from pynput import keyboard as pynput_kb
 
 from valorant_api import (
-    get_client, get_pregame_match_id, get_current_map,
+    get_client, get_pregame_info,
     select_agent, lock_agent, test_connection, get_region
 )
 from agents import fetch_agents, fetch_maps
@@ -766,7 +766,8 @@ class InstalockApp(ctk.CTk):
 
             if self.is_active and client:
                 try:
-                    match_id = get_pregame_match_id(client)
+                    # ⚡ Uma única chamada → match_id + map_id simultaneamente
+                    match_id, map_id = get_pregame_info(client)
 
                     if match_id and match_id != self.last_match:
                         self.last_match = match_id
@@ -777,7 +778,6 @@ class InstalockApp(ctk.CTk):
                     if match_id and not self.lock_fired:
                         self.lock_fired = True
 
-                        map_id = get_current_map(client)
                         agent_id, agent_name, fallback_id, fallback_name = self._get_agent_for_map(map_id)
 
                         if not agent_id:
